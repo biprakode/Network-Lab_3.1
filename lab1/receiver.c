@@ -1,10 +1,12 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 #include <arpa/inet.h>
 #include "frame.h"
 #include "error.h"
 #include "scheme.h"
-#include "utils/utils.h"
+#include "utils.h"
 
 #define PORT 8080
 

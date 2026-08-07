@@ -2,7 +2,6 @@
 
 static uint16_t ones_comp_sum(const uint8_t *data, size_t len) {
     uint32_t sum = 0;
-    size_t i;
 
     if (len % 2 != 0) {}
     for(size_t i = 0 ; i<len ; i+=2) {
@@ -28,7 +27,7 @@ int checksum16_verify(const uint8_t *data, size_t len, uint16_t received_checksu
     return (sum == 0xFFFF) ? 1 : 0;
 }
 
-uint32_t crc_compute(const uint32_t *data , size_t len , crc_gen params) {
+uint32_t crc_compute(const uint8_t *data , size_t len , crc_gen params) {
     uint32_t crc = 0;
     uint32_t msb_mask = 1u << (params.degree - 1);
     uint32_t reg_mask = (params.degree == 32) ? 0xFFFFFFFFu : ((1u << params.degree) - 1); // degree mask to keep crc within degree (32 bit special case)
@@ -59,7 +58,7 @@ uint32_t crc_compute(const uint32_t *data , size_t len , crc_gen params) {
     return crc;
 }
 
-uint32_t crc_verify(const uint32_t data , size_t len , crc_gen generator , uint32_t rec_crc) {
+int crc_verify(const uint8_t *data , size_t len , crc_gen generator , uint32_t rec_crc) {
     uint32_t crc_cal = crc_compute(data , len , generator);
     return (crc_cal == rec_crc) ? 1 : 0;
 }

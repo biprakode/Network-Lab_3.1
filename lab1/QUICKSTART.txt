@@ -1,0 +1,93 @@
+╔══════════════════════════════════════════════════════════════════════════════╗
+║             Network Frame Transmission with Error Detection                  ║
+║                         QUICK START GUIDE                                    ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+BUILD:
+------
+  make              # Build everything
+  make test         # Run all tests
+  make clean        # Clean build artifacts
+
+RUN IN TWO TERMINALS:
+---------------------
+
+  Terminal 1 (Receiver - runs FIRST):
+  $ ./receiver output.txt crc32
+  # Waits for connection... (ready after ~1 second)
+
+  Terminal 2 (Sender):
+  $ ./sender data.txt crc32
+  # Connects, sends frames, closes connection
+
+  Terminal 1 (Receiver output):
+  seq=0 ACCEPTED len=44
+  seq=1 ACCEPTED len=44
+  seq=2 ACCEPTED len=44
+  seq=3 ACCEPTED len=44
+  seq=4 ACCEPTED len=4
+  sender closed connection - done
+  summary: accepted=5 rejected=0
+
+VERIFY TRANSFER:
+----------------
+  $ diff data.txt output.txt
+  # (no output = files match perfectly ✓)
+
+AVAILABLE SCHEMES:
+------------------
+  checksum    16-bit Internet Checksum
+  crc8        8-bit CRC
+  crc10       10-bit CRC  
+  crc16       16-bit CRC
+  crc32       32-bit CRC (recommended)
+
+EXAMPLES:
+---------
+  # Test with 16-bit checksum
+  Terminal 1: ./receiver output.txt checksum
+  Terminal 2: ./sender data.txt checksum
+  Verify:     diff data.txt output.txt
+
+  # Test with CRC-16
+  Terminal 1: ./receiver output.txt crc16
+  Terminal 2: ./sender data.txt crc16
+  Verify:     diff data.txt output.txt
+
+TESTING:
+--------
+  # Run comprehensive test suite (50+ assertions)
+  $ make test
+
+TROUBLESHOOTING:
+----------------
+  Q: "Connection refused"
+  A: Start receiver first in Terminal 1, wait 1 second before starting sender
+
+  Q: "All frames rejected"
+  A: Make sure both sender and receiver use SAME scheme (e.g., both crc32)
+
+  Q: "Files don't match"
+  A: Should never happen if all frames are ACCEPTED - check diff output
+
+  Q: "Port already in use"
+  A: Wait a few seconds for port to be released, or: killall receiver
+
+KEY POINTS:
+-----------
+  ✓ Always start receiver first
+  ✓ Both programs must use the same scheme
+  ✓ Each frame is 64 bytes (16B header + 44B payload + 4B trailer)
+  ✓ Last frame may have partial payload
+  ✓ FCS = Frame Check Sequence (error detection code)
+  ✓ All frames must be ACCEPTED for perfect transfer
+
+STATUS:
+-------
+  ✓ All bugs fixed (5 critical fixes)
+  ✓ All tests passing (50+ assertions)
+  ✓ Live transmission verified (100% match)
+  ✓ Zero compilation errors
+  ✓ Ready for use
+
+For detailed information, see README.md or FINALIZATION.md

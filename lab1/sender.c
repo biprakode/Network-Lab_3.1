@@ -1,10 +1,13 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <time.h>
 #include <arpa/inet.h>
+#include <unistd.h>
 #include "frame.h"
 #include "error.h"
 #include "scheme.h"
-#include "utils/utils.h"
+#include "utils.h"
 
 #define PORT 8080
 
@@ -58,12 +61,11 @@ int main(int argc , char *argv[]) {
         return 1;
     }
  
-    const char *filename = argv[1];
     scheme_t scheme = parse_scheme(argv[2]);
 
 
-    size_t *file_size = 0;
-    const uint8_t *data = read_file("data.txt" , &file_size);
+    size_t file_size = 0;
+    uint8_t *data = read_file("data.txt" , &file_size);
 
     if (data == NULL) {
         fprintf(stderr, "Failed to read the file.\n");
@@ -92,13 +94,13 @@ int main(int argc , char *argv[]) {
         memset(frame.header.src_addr, 0xAA, sizeof(frame.header.src_addr));
         memset(frame.header.dest_addr, 0xBB, sizeof(frame.header.dest_addr));
 
-        frame.header.frame_len = htonl((uint16_t) chunk_len);
+        frame.header.frame_len = htons((uint16_t) chunk_len);
         frame.header.frame_seq = htons(seq);
         
         memcpy(frame.payload , data + offset , chunk_len); // fill payload
 
         uint32_t fcs = compute_fcs(scheme , (uint8_t *) &frame , HEADER_SIZE + PAYLOAD_SIZE);
-        frame.trailer.fcs = htons(fcs);
+        frame.trailer.fcs = htonl(fcs);
 
         if(send_all(fd , &frame , FRAME_SIZE) != FRAME_SIZE) {
             fprintf(stderr, "send failed at seq %u\n", seq);

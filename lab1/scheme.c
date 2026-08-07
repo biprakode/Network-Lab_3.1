@@ -30,6 +30,10 @@ static crc_gen crc_generator(scheme_t s) {
             crc_gen params = {.poly = 0x04C11DB7 , .degree = 32};
             return params;
         }
+        default : {
+            crc_gen params = {.poly = 0 , .degree = 0};
+            return params;
+        }
     }
 }
 

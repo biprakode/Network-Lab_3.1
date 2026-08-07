@@ -1,0 +1,4 @@
+The quick brown fox jumps over the lazy dog.
+This is a test message for network transmission.
+All frames should be reconstructed perfectly.
+Error detection ensures data integrity!

@@ -31,7 +31,7 @@ int tcp_listen(uint16_t port , int backlog) {
     addr.sin_addr.s_addr = INADDR_ANY; // listen for everything
     addr.sin_port = htons(port); // network endian convertion
 
-    if(bind(fd , (struct sockaddr_in *) &addr , sizeof(addr)) < 0) {
+    if(bind(fd , (const struct sockaddr *) &addr , sizeof(addr)) < 0) {
         perror("bind error");
         close(fd);
         return -1;
@@ -108,7 +108,7 @@ ssize_t recv_all(int fd, void *buf, size_t len) {
     uint8_t *p = buf;
     ssize_t got = 0;
 
-    while(got < len) {
+    while(got < (ssize_t)len) {
         ssize_t n = read(fd , p + got , len-got);
 
         if (n < 0) {

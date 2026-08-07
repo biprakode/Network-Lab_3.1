@@ -1,0 +1,7 @@
+seq=0 ACCEPTED len=44
+seq=1 ACCEPTED len=44
+seq=2 ACCEPTED len=44
+seq=3 ACCEPTED len=44
+seq=4 ACCEPTED len=4
+sender closed connection - done
+summary: accepted=5 rejected=0
