@@ -1,3 +1,18 @@
 .vscode/tasks.json
 *.o
 context/
+
+# Executables
+sender
+receiver
+analyze_crc
+eval
+test_burst
+test_poly_correct
+test_systematic
+test_undetectable
+
+# Build artifacts
+*.csv
+*.so
+*.a

@@ -10,7 +10,7 @@ int checksum16_verify(const uint8_t *data, size_t len, uint16_t received_checksu
 typedef struct {
     uint32_t poly;
     int degree;
-} crc_gen;
+}crc_gen;
 
 /* Fixed: Changed parameters from uint32_t to const uint8_t *data */
 uint32_t crc_compute(const uint8_t *data, size_t len, crc_gen params);
