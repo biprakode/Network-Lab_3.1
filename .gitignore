@@ -16,3 +16,47 @@ test_undetectable
 *.csv
 *.so
 *.a
+
+# Compiled object files
+*.o
+*.a
+*.so
+
+# Test binaries
+lab2/tests/channel_test
+lab2/tests/timer_test
+lab2/tests/arq_test
+lab2/eval/eval_main
+
+
+# Build artifacts
+*.d
+*.swp
+*.swo
+*~
+
+# Documentation
+*.md
+*.pdf
+*.tex
+lab1/report/*
+
+# LaTeX/TeX residuals
+*.aux
+*.out
+*.toc
+*.log
+*.bbl
+*.blg
+*.dvi
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
+# Context folder (all contents)
+context/
+context/**/*
+
+# Temporary files
+*.tmp
+.DS_Store
