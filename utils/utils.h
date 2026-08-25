@@ -18,4 +18,7 @@ ssize_t recv_all(int fd, void *buf, size_t len);
 // clean_up
 void close_conn(int fd);
 
+// file I/O
+uint8_t* read_file(const char* filename, size_t* out_size);
+
 #endif

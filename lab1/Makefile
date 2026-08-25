@@ -11,9 +11,25 @@ TEST_DIR  := tests
 TEST_SRCS := $(wildcard $(TEST_DIR)/*_test.c)
 TEST_BINS := $(TEST_SRCS:.c=)
 
-.PHONY: all clean test run-receiver run-sender
+.PHONY: all clean test run-receiver run-sender eval perf
 
 all: sender receiver
+
+# ---- error injection module evaluation ----
+ERROR_INJECT_DIR := error_inject
+ERROR_INJECT_SRCS := $(ERROR_INJECT_DIR)/eval_main.c $(ERROR_INJECT_DIR)/bit_flip.c $(ERROR_INJECT_DIR)/targeted_inject.c
+ERROR_INJECT_OBJS := $(ERROR_INJECT_SRCS:.c=.o)
+
+eval: $(ERROR_INJECT_OBJS) $(OBJS_COMMON)
+	$(CC) $(CFLAGS) -o $@ $^ -lm
+
+# ---- performance analysis module ----
+PERF_ANALYSIS_DIR := perf_analysis
+PERF_ANALYSIS_SRCS := $(PERF_ANALYSIS_DIR)/perf_main.c $(PERF_ANALYSIS_DIR)/perf_analyzer.c
+PERF_ANALYSIS_OBJS := $(PERF_ANALYSIS_SRCS:.c=.o)
+
+perf: $(PERF_ANALYSIS_OBJS) $(OBJS_COMMON)
+	$(CC) $(CFLAGS) -o $@ $^
 
 sender: sender.o $(OBJS_COMMON)
 	$(CC) $(CFLAGS) -o $@ $^
@@ -43,4 +59,4 @@ run-sender: sender
 	./sender data.txt checksum
 
 clean:
-	rm -f *.o $(UTILS_DIR)/*.o sender receiver $(TEST_BINS) $(TEST_DIR)/*.o output.txt
+	rm -f *.o $(UTILS_DIR)/*.o sender receiver eval perf $(TEST_BINS) $(TEST_DIR)/*.o $(ERROR_INJECT_OBJS) $(PERF_ANALYSIS_OBJS) output.txt results.csv perf_results.csv

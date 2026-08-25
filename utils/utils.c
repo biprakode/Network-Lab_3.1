@@ -1,6 +1,7 @@
 #include "utils.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
@@ -127,4 +128,34 @@ ssize_t recv_all(int fd, void *buf, size_t len) {
 
 void close_conn(int fd) {
     if (fd >= 0) close(fd);
+}
+
+uint8_t* read_file(const char* filename, size_t* out_size) {
+    FILE *f = fopen(filename, "rb");
+    if (!f) {
+        perror("fopen");
+        return NULL;
+    }
+
+    fseek(f, 0, SEEK_END);
+    size_t size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    uint8_t *buf = malloc(size);
+    if (!buf) {
+        perror("malloc");
+        fclose(f);
+        return NULL;
+    }
+
+    size_t read = fread(buf, 1, size, f);
+    fclose(f);
+
+    if (read != size) {
+        free(buf);
+        return NULL;
+    }
+
+    *out_size = size;
+    return buf;
 }
