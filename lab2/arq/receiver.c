@@ -116,7 +116,7 @@ static int receiver_sw_mode(int fd, FILE *output) {
         if (expected_fcs != received_fcs) {
             printf("[RECEIVER-SW] Corrupted frame received (FCS mismatch)\n");
             g_stats.corrupted_count++;
-            // Send ACK for last good frame (don't advance Rn)
+            // Send ACK for last good frame 
             // Fall through to send ACK for current Rn
         } else if (frame.header.frame_type != FRAME_DATA) {
             printf("[RECEIVER-SW] Non-DATA frame received (type=%d)\n", frame.header.frame_type);

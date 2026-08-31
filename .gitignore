@@ -2,31 +2,33 @@
 *.o
 context/
 
-# Executables
-sender
-receiver
-analyze_crc
-eval
-test_burst
-test_poly_correct
-test_systematic
-test_undetectable
+# Executables (root level only)
+/sender
+/receiver
+/analyze_crc
+/eval
+/test_burst
+/test_poly_correct
+/test_systematic
+/test_undetectable
 
 # Build artifacts
-*.csv
 *.so
 *.a
-
-# Compiled object files
 *.o
-*.a
-*.so
 
-# Test binaries
+# Test binaries and eval executables
+lab1/sender
+lab1/receiver
+lab1/tests/eval
 lab2/tests/channel_test
 lab2/tests/timer_test
 lab2/tests/arq_test
 lab2/eval/eval_main
+
+# Binary data and output files
+*.bin
+/results.csv
 
 
 # Build artifacts
@@ -35,11 +37,16 @@ lab2/eval/eval_main
 *.swo
 *~
 
-# Documentation
-*.md
+# Documentation (deliverables tracked; build artifacts excluded)
 *.pdf
 *.tex
 lab1/report/*
+
+# Lab2 markdown (only QUICKSTART and REPORT tracked as deliverables)
+lab2/CLAUDE.md
+lab2/context/**/*.md
+lab2/eval/EVAL_INSIGHTS.md
+/FIXES_COMPLETE.md
 
 # LaTeX/TeX residuals
 *.aux
