@@ -13,7 +13,10 @@ TEST_DIR  := tests
 TEST_SRCS := $(wildcard $(TEST_DIR)/*_test.c)
 TEST_BINS := $(TEST_SRCS:.c=)
 
-.PHONY: all clean test channel_test timer_test arq_test
+# Eval targets
+EVAL_DIR  := eval
+
+.PHONY: all clean test channel_test timer_test arq_test eval run-eval
 
 all: channel_test timer_test arq_test
 
@@ -32,6 +35,9 @@ $(TEST_DIR)/timer_test: $(TEST_DIR)/timer_test.o $(OBJS_COMMON)
 $(TEST_DIR)/arq_test: $(TEST_DIR)/arq_test.o arq/sender.o arq/receiver.o $(OBJS_COMMON)
 	$(CC) $(CFLAGS) -pthread -o $@ $^
 
+$(EVAL_DIR)/eval_main: $(EVAL_DIR)/eval_main.o arq/sender.o arq/receiver.o $(OBJS_COMMON)
+	$(CC) $(CFLAGS) -pthread -o $@ $^
+
 %.o: %.c
 	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 
@@ -40,5 +46,11 @@ test: channel_test timer_test arq_test
 	./$(TEST_DIR)/timer_test
 	./$(TEST_DIR)/arq_test
 
+eval: $(EVAL_DIR)/eval_main
+
+run-eval: eval
+	./$(EVAL_DIR)/eval_main
+
 clean:
 	rm -f *.o $(UTILS_DIR)/*.o $(LAB1_DIR)/*.o $(LAB1_DIR)/error_inject/*.o arq/*.o $(TEST_DIR)/*.o $(TEST_DIR)/channel_test $(TEST_DIR)/timer_test $(TEST_DIR)/arq_test
+	rm -f $(EVAL_DIR)/*.o $(EVAL_DIR)/eval_main $(EVAL_DIR)/input.bin $(EVAL_DIR)/output_*.bin

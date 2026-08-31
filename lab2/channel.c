@@ -5,11 +5,13 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <pthread.h>
 #include "../utils/utils.h"
 #include "../lab1/error_inject/bit_flip.h"
 
 static channel_config c_config;
 static channel_stats c_stat = {0};
+static pthread_mutex_t c_stat_lock = PTHREAD_MUTEX_INITIALIZER;
 
 double rand_double() {
     return (double)rand() / (double)RAND_MAX;
@@ -22,7 +24,9 @@ void channel_init(channel_config config) {
 
 int channel_send(int fd, const uint8_t *data, int len) {
     if (rand_double() < c_config.loss_prob) {
+        pthread_mutex_lock(&c_stat_lock);
         c_stat.frames_lost++;
+        pthread_mutex_unlock(&c_stat_lock);
         printf("[CHANNEL] Frame lost while sending\n");
         return -1;
     }
@@ -35,51 +39,31 @@ int channel_send(int fd, const uint8_t *data, int len) {
     memcpy(frame_copy, data, len);
 
     if (rand_double() < c_config.corruption_prob) {
+        pthread_mutex_lock(&c_stat_lock);
         c_stat.frames_corrupted++;
+        pthread_mutex_unlock(&c_stat_lock);
         size_t bit_index = random_bit_index(len);
         flip_bit(frame_copy, len, bit_index);
         printf("[CHANNEL] Frame corrupted at bit %zu (byte %zu, bit %zu)\n", bit_index, bit_index / 8, bit_index % 8);
     }
 
     // c nanosleep
-    if (c_config.delay_ms > 0) { 
-        struct timespec req = {0};
-        req.tv_nsec = (long)(c_config.delay_ms * 1e6);
-        nanosleep(&req, NULL);
-    }
-
-    c_stat.frames_sent++;
-    int result = send_all(fd, frame_copy, len);
-    free(frame_copy);
-    return result;
-}
-
-int channel_recv(int fd, uint8_t *buffer, int len) {
-    int bytes_recv = recv_all(fd, buffer, len);
-    if (bytes_recv < 0) {
-        return bytes_recv;
-    }
-
-    if (rand_double() < c_config.loss_prob) {
-        c_stat.frames_lost++;
-        printf("[CHANNEL] Frame lost while receiving\n");
-        return -1;
-    }
-
-    if (rand_double() < c_config.corruption_prob) {
-        c_stat.frames_corrupted++;
-        size_t bit_index = random_bit_index(len);
-        flip_bit(buffer, len, bit_index);
-        printf("[CHANNEL] Frame corrupted at bit %zu (byte %zu, bit %zu)\n", bit_index, bit_index / 8, bit_index % 8);
-    }
-
     if (c_config.delay_ms > 0) {
         struct timespec req = {0};
         req.tv_nsec = (long)(c_config.delay_ms * 1e6);
         nanosleep(&req, NULL);
     }
 
-    return bytes_recv;
+    pthread_mutex_lock(&c_stat_lock);
+    c_stat.frames_sent++;
+    pthread_mutex_unlock(&c_stat_lock);
+    int result = send_all(fd, frame_copy, len);
+    free(frame_copy);
+    return result;
+}
+
+int channel_recv(int fd, uint8_t *buffer, int len) {
+    return recv_all(fd, buffer, len);
 }
 
 channel_stats channel_get_stats(void) {
