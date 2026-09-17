@@ -29,6 +29,34 @@ static arq_config_t *g_config;
 static arq_stats_t g_stats = {0};
 static struct timespec g_start_time = {0};
 
+// Send timestamp per sequence number, used to measure the time from a data frame
+// leaving the sender to the arrival of its ACK
+static struct timespec g_send_ts[65536];
+
+static void mark_send_time(uint16_t seq) {
+    clock_gettime(CLOCK_MONOTONIC, &g_send_ts[seq]);
+}
+
+static void record_rtt(uint16_t seq) {
+    if (g_send_ts[seq].tv_sec == 0 && g_send_ts[seq].tv_nsec == 0) {
+        return;
+    }
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    double ms = (now.tv_sec - g_send_ts[seq].tv_sec) * 1000.0 + (now.tv_nsec - g_send_ts[seq].tv_nsec) / 1e6;
+    if (ms < 0) {
+        return;
+    }
+    if (g_stats.rtt_samples == 0 || ms < g_stats.rtt_min_ms) {
+        g_stats.rtt_min_ms = ms;
+    }
+    if (g_stats.rtt_samples == 0 || ms > g_stats.rtt_max_ms) {
+        g_stats.rtt_max_ms = ms;
+    }
+    g_stats.rtt_sum_ms += ms;
+    g_stats.rtt_samples++;
+}
+
 // Forward declarations for mode-specific implementations
 static int sender_sw_mode(int fd, uint8_t *data, size_t file_size);
 static int sender_gbn_mode(int fd, uint8_t *data, size_t file_size , arq_config_t *sender_config);
@@ -53,14 +81,27 @@ int wait_for_ack(int fd, frame_t *ack_frame, double timeout_ms) {
         return 0;  // Timeout
     }
 
-    // Data available to read
+    // Data available, or the peer closed the connection
     int bytes = channel_recv(fd, (uint8_t *)ack_frame, FRAME_SIZE);
+    if (bytes <= 0) {
+        return -2;  // Peer closed: the receiver finished and hung up
+    }
     return bytes;
+}
+
+// True if fd has at least one frame ready to read right now
+static int fd_readable_now(int fd) {
+    fd_set r;
+    FD_ZERO(&r);
+    FD_SET(fd, &r);
+    struct timeval z = {0, 0};
+    return select(fd + 1, &r, NULL, NULL, &z) > 0;
 }
 
 void sender_init(arq_config_t *sender_config) {
     g_config = sender_config;
     memset(&g_stats, 0, sizeof(g_stats));
+    memset(g_send_ts, 0, sizeof(g_send_ts));
     clock_gettime(CLOCK_MONOTONIC, &g_start_time);
 }
 
@@ -81,7 +122,7 @@ int sender_run(arq_config_t *sender_config) {
         return -1;
     }
 
-    timer_config timer_cfg = {100.0, 0};  // 100ms RTO, no EMA
+    timer_config timer_cfg = {20.0, 0};  // 20ms fixed RTO, no EMA
     timer_init(timer_cfg);
 
     int result = 0;
@@ -129,8 +170,10 @@ int sender_run(arq_config_t *sender_config) {
 static int sw_wait_for_ack(int fd, frame_t *frame, uint16_t Sn) {
     int ack_received = 0;
     while (!ack_received) {
-        double remaining = timer_frame_remaining_ms(Sn);
-        if (remaining <= 0) remaining = 0.1;  // At least 0.1ms
+        // Wait one full retransmission timeout for the ACK. select() returns
+        // early the moment the ACK arrives.
+        double remaining = timer_get_rto_ms();
+        if (remaining <= 0) remaining = 1.0;
 
         frame_t ack_frame = {0};
         int bytes = wait_for_ack(fd, &ack_frame, remaining);
@@ -144,6 +187,7 @@ static int sw_wait_for_ack(int fd, frame_t *frame, uint16_t Sn) {
                 // Valid ACK for this frame
                 printf("[SENDER-SW] Received ACK for frame #%d\n", Sn);
                 timer_stop_window();
+                record_rtt(Sn);
                 g_stats.acks_received++;
                 ack_received = 1;
                 break;
@@ -154,13 +198,16 @@ static int sw_wait_for_ack(int fd, frame_t *frame, uint16_t Sn) {
                 }
             }
         } else if (bytes == 0) {
-            // Timeout
-            if (timer_window_expired()) {
-                printf("[SENDER-SW] Timeout! Retransmitting frame #%d\n", Sn);
-                channel_send(fd, (uint8_t *)frame, FRAME_SIZE);
-                g_stats.frames_retransmitted++;
-                timer_start_window();
-            }
+            // Timeout: no ACK within the RTO, resend and restart the window timer
+            printf("[SENDER-SW] Timeout! Retransmitting frame #%d\n", Sn);
+            mark_send_time(Sn);
+            channel_send(fd, (uint8_t *)frame, FRAME_SIZE);
+            g_stats.frames_retransmitted++;
+            timer_stop_window();
+            timer_start_window();
+        } else if (bytes == -2) {
+            // Receiver finished and closed the socket
+            return 0;
         } else {
             // Error
             perror("wait_for_ack");
@@ -195,6 +242,7 @@ static int sender_sw_mode(int fd, uint8_t *data, size_t file_size) {
         frame.trailer.fcs = htonl(fcs);
 
         // ===== SEND FRAME =====
+        mark_send_time(Sn);
         channel_send(fd, (uint8_t *)&frame, FRAME_SIZE);
         g_stats.frames_sent++;
         printf("[SENDER-SW] Sent DATA frame #%d (offset=%zu, len=%zu)\n", Sn, offset, chunk_len);
@@ -219,6 +267,7 @@ static int sender_sw_mode(int fd, uint8_t *data, size_t file_size) {
     uint32_t eot_fcs = compute_fcs(SCHEME_CHECKSUM16, (uint8_t *)&eot_frame, FRAME_SIZE - TRAILER_SIZE);
     eot_frame.trailer.fcs = htonl(eot_fcs);
 
+    mark_send_time(Sn);
     channel_send(fd, (uint8_t *)&eot_frame, FRAME_SIZE);
     g_stats.frames_sent++;
     printf("[SENDER-SW] Sent EOT frame #%d\n", Sn);
@@ -241,11 +290,16 @@ arq_stats_t sender_get_stats(arq_config_t *sender) {
 
 
 // ===== HELPER: Wait for ACK and handle retransmit on timeout (GBN mode) =====
-static void gbn_wait_step(int fd, frame_t *frame_store, uint16_t Sw, uint16_t *Sf, uint16_t Sn, bool *timer_running) {
+// Returns 1 if the receiver closed the connection (transfer done), else 0.
+static int gbn_wait_step(int fd, frame_t *frame_store, uint16_t Sw, uint16_t *Sf, uint16_t Sn, bool *timer_running) {
+    int peer_closed = 0;
     frame_t ack_frame = {0};
+    // Wait one retransmission timeout for an ACK, then resend the window
+    double rto_ms = timer_get_rto_ms();
+    if (rto_ms <= 0) rto_ms = 1.0;
     struct timeval tv;
-    tv.tv_sec = 5; // 5 second timeout as safety
-    tv.tv_usec = 0;
+    tv.tv_sec = (int)(rto_ms / 1000.0);
+    tv.tv_usec = (int)((rto_ms - tv.tv_sec * 1000) * 1000);
 
     fd_set readfds;
     FD_ZERO(&readfds);
@@ -253,9 +307,10 @@ static void gbn_wait_step(int fd, frame_t *frame_store, uint16_t Sw, uint16_t *S
 
     int ret = select(fd + 1, &readfds, NULL, NULL, &tv);
 
-    if(ret > 0) { // ACK ARRIVED while sleeping
-        int bytes = channel_recv(fd , (uint8_t *)&ack_frame , FRAME_SIZE);
-        if(bytes > 0) { // check validity of ACK
+    if(ret > 0) { // one or more ACKs arrived: drain every ACK that is waiting
+        do {
+            int bytes = channel_recv(fd , (uint8_t *)&ack_frame , FRAME_SIZE);
+            if(bytes <= 0) { peer_closed = 1; break; }
             uint32_t expected_fcs = compute_fcs(SCHEME_CHECKSUM16 , (uint8_t *)&ack_frame , FRAME_SIZE - TRAILER_SIZE);
             uint32_t received_fcs = ntohl(ack_frame.trailer.fcs);
 
@@ -266,6 +321,7 @@ static void gbn_wait_step(int fd, frame_t *frame_store, uint16_t Sw, uint16_t *S
                     while(*Sf < ackNo) {
                         (*Sf)++;
                     }
+                    record_rtt(ackNo - 1);
                     g_stats.acks_received++;
 
                     if (*Sf == Sn) { // window now empty
@@ -274,16 +330,18 @@ static void gbn_wait_step(int fd, frame_t *frame_store, uint16_t Sw, uint16_t *S
                     }
                 }
             }
-        }
+        } while(fd_readable_now(fd));
     } else if(ret == 0) {
         // Timeout: resend entire outstanding window [Sf, Sn)
         printf("[SENDER-GBN] Timeout! Resending frames [%d, %d)\n", *Sf, Sn);
         for(uint16_t i = *Sf; i < Sn; i++) {
+            mark_send_time(i);
             channel_send(fd, (uint8_t *)&frame_store[i % Sw], FRAME_SIZE);
             g_stats.frames_retransmitted++;
         }
         timer_start_window();
     }
+    return peer_closed;
 }
 
 static int sender_gbn_mode(int fd, uint8_t *data, size_t file_size , arq_config_t *sender_config) {
@@ -298,7 +356,7 @@ static int sender_gbn_mode(int fd, uint8_t *data, size_t file_size , arq_config_
     // Main send loop
     while (offset < file_size) {
         if(Sn - Sf >= Sw) { // window full
-            gbn_wait_step(fd, frame_store, Sw, &Sf, Sn, &timer_running);
+            if (gbn_wait_step(fd, frame_store, Sw, &Sf, Sn, &timer_running)) return 0;
             continue;
         }
 
@@ -321,6 +379,7 @@ static int sender_gbn_mode(int fd, uint8_t *data, size_t file_size , arq_config_
 
         // ===== SEND FRAME =====
         frame_store[Sn % Sw] = frame;
+        mark_send_time(Sn);
         channel_send(fd, (uint8_t *)&frame, FRAME_SIZE);
         g_stats.frames_sent++;
         printf("[SENDER-GBN] Sent DATA frame #%d (offset=%zu, len=%zu)\n", Sn, offset, chunk_len);
@@ -348,6 +407,7 @@ static int sender_gbn_mode(int fd, uint8_t *data, size_t file_size , arq_config_
     eot_frame.trailer.fcs = htonl(eot_fcs);
 
     frame_store[Sn % Sw] = eot_frame;
+    mark_send_time(Sn);
     channel_send(fd, (uint8_t *)&eot_frame, FRAME_SIZE);
     g_stats.frames_sent++;
     printf("[SENDER-GBN] Sent EOT frame #%d\n", Sn);
@@ -360,16 +420,19 @@ static int sender_gbn_mode(int fd, uint8_t *data, size_t file_size , arq_config_
 
     // ===== DRAIN: Wait for all frames including EOT to be acknowledged =====
     while (Sf < Sn) {
-        gbn_wait_step(fd, frame_store, Sw, &Sf, Sn, &timer_running);
+        if (gbn_wait_step(fd, frame_store, Sw, &Sf, Sn, &timer_running)) break;
     }
 
     return 0;
 }
 
 // ===== HELPER: Wait for ACK/NAK and handle retransmit on timeout (SR mode) =====
-static void sr_wait_step(int fd, frame_t *frame_store, timer_slot_t *timers, uint16_t Sw, uint16_t *Sf, uint16_t Sn) {
+// Returns 1 if the receiver closed the connection (transfer done), else 0.
+static int sr_wait_step(int fd, frame_t *frame_store, timer_slot_t *timers, uint16_t Sw, uint16_t *Sf, uint16_t Sn) {
+    int peer_closed = 0;
     // Calculate min timeout from all pending timers
-    double min_timeout_ms = 5000.0;  // Default 5 seconds
+    double min_timeout_ms = timer_get_rto_ms();  // Cap the wait at one RTO
+    if (min_timeout_ms <= 0) min_timeout_ms = 1.0;
     uint16_t earliest_seq = UINT16_MAX;
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
@@ -379,7 +442,7 @@ static void sr_wait_step(int fd, frame_t *frame_store, timer_slot_t *timers, uin
         if(slot->is_pending) {
             double elapsed_ms = (now.tv_sec - slot->send_time.tv_sec) * 1000.0 +
                                (now.tv_nsec - slot->send_time.tv_nsec) / 1e6;
-            double remaining = 100.0 - elapsed_ms;  // Fixed 100ms RTO
+            double remaining = 20.0 - elapsed_ms;  // Fixed 20ms RTO
             if(remaining < 0) remaining = 0;
             if(remaining < min_timeout_ms) {
                 min_timeout_ms = remaining;
@@ -399,10 +462,12 @@ static void sr_wait_step(int fd, frame_t *frame_store, timer_slot_t *timers, uin
 
     int ret = select(fd + 1, &readfds, NULL, NULL, &tv);
 
-    if(ret > 0) {  // ACK/NAK ARRIVED
-        frame_t ack_frame = {0};
+    if(ret > 0) {  // one or more ACK/NAK frames arrived: drain all of them
+      frame_t ack_frame = {0};
+      do {
         int bytes = channel_recv(fd, (uint8_t *)&ack_frame, FRAME_SIZE);
-        if(bytes > 0) {
+        if(bytes <= 0) { peer_closed = 1; break; }
+        {
             uint32_t expected_fcs = compute_fcs(SCHEME_CHECKSUM16, (uint8_t *)&ack_frame, FRAME_SIZE - TRAILER_SIZE);
             uint32_t received_fcs = ntohl(ack_frame.trailer.fcs);
 
@@ -413,6 +478,7 @@ static void sr_wait_step(int fd, frame_t *frame_store, timer_slot_t *timers, uin
                 if(ack_frame.header.frame_type == FRAME_NAK) {
                     if((frame_seq >= *Sf) && (frame_seq < Sn)) {
                         printf("[SENDER-SR] Received NAK for frame #%d, resending\n", frame_seq);
+                        mark_send_time(frame_seq);
                         channel_send(fd, (uint8_t *)&frame_store[frame_seq % Sw], FRAME_SIZE);
                         g_stats.frames_retransmitted++;
                         // Restart timer for this frame
@@ -424,6 +490,7 @@ static void sr_wait_step(int fd, frame_t *frame_store, timer_slot_t *timers, uin
                 else if(ack_frame.header.frame_type == FRAME_ACK) {
                     if((frame_seq > *Sf) && (frame_seq <= Sn)) {
                         printf("[SENDER-SR] Received ACK for frame #%d\n", frame_seq);
+                        record_rtt(frame_seq - 1);
                         g_stats.acks_received++;
                         // Slide window: purge and stop timers
                         while(*Sf < frame_seq) {
@@ -434,9 +501,11 @@ static void sr_wait_step(int fd, frame_t *frame_store, timer_slot_t *timers, uin
                 }
             }
         }
+      } while(fd_readable_now(fd));
     } else if(ret == 0) {  // TIMEOUT: find and resend earliest expired frame
         if(earliest_seq != UINT16_MAX) {
             printf("[SENDER-SR] Timeout for frame #%d, resending\n", earliest_seq);
+            mark_send_time(earliest_seq);
             channel_send(fd, (uint8_t *)&frame_store[earliest_seq % Sw], FRAME_SIZE);
             g_stats.frames_retransmitted++;
             // Restart timer for this frame
@@ -444,6 +513,7 @@ static void sr_wait_step(int fd, frame_t *frame_store, timer_slot_t *timers, uin
             timers[earliest_seq % Sw].is_pending = true;
         }
     }
+    return peer_closed;
 }
 
 static int sender_sr_mode(int fd, uint8_t *data, size_t file_size , arq_config_t *sender_config) {
@@ -460,7 +530,7 @@ static int sender_sr_mode(int fd, uint8_t *data, size_t file_size , arq_config_t
     while (offset < file_size) {
         // ===== WINDOW FULL: WAIT FOR ACK/NAK =====
         if(Sn - Sf >= Sw) {
-            sr_wait_step(fd, frame_store, timers, Sw, &Sf, Sn);
+            if (sr_wait_step(fd, frame_store, timers, Sw, &Sf, Sn)) return 0;
             continue;
         }
 
@@ -483,6 +553,7 @@ static int sender_sr_mode(int fd, uint8_t *data, size_t file_size , arq_config_t
 
         // ===== SEND FRAME & START TIMER =====
         frame_store[Sn % Sw] = frame;
+        mark_send_time(Sn);
         channel_send(fd, (uint8_t *)&frame, FRAME_SIZE);
         g_stats.frames_sent++;
         printf("[SENDER-SR] Sent DATA frame #%d (offset=%zu, len=%zu)\n", Sn, offset, chunk_len);
@@ -506,6 +577,7 @@ static int sender_sr_mode(int fd, uint8_t *data, size_t file_size , arq_config_t
     eot_frame.trailer.fcs = htonl(eot_fcs);
 
     frame_store[Sn % Sw] = eot_frame;
+    mark_send_time(Sn);
     channel_send(fd, (uint8_t *)&eot_frame, FRAME_SIZE);
     g_stats.frames_sent++;
     printf("[SENDER-SR] Sent EOT frame #%d\n", Sn);
@@ -518,7 +590,7 @@ static int sender_sr_mode(int fd, uint8_t *data, size_t file_size , arq_config_t
 
     // ===== DRAIN: Wait for all frames including EOT to be acknowledged =====
     while (Sf < Sn) {
-        sr_wait_step(fd, frame_store, timers, Sw, &Sf, Sn);
+        if (sr_wait_step(fd, frame_store, timers, Sw, &Sf, Sn)) break;
     }
 
     return 0;

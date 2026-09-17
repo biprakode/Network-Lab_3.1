@@ -183,32 +183,8 @@ Raw results → `eval/EVAL_RESULTS.csv` (one row per trial, 90+ rows for a full 
 
 Analysis → `eval/EVAL_INSIGHTS.md` (aggregate statistics and trends, written separately after CSV collection).
 
-## 5. Implementation Notes
 
-### 5.1 Bug Fixes (Phase 6 Prerequisites)
-
-Before evaluation was possible, several bugs were fixed:
-
-1. **End-of-Transmission (EOT)**: No sender transmitted a zero-length terminator frame, so receivers would block indefinitely after the last real chunk. Fixed: all three modes now send EOT frame (chunk_len=0) after main loop and drain remaining ACKs.
-
-2. **GBN Timeout Retransmit**: GBN's timeout handler only printed a message; it never resent the window. Fixed: timeout handler now resends [Sf, Sn) and restarts timer.
-
-3. **Window Drain**: GBN/SR loops exited as soon as `offset >= file_size`, leaving unacknowledged frames. Fixed: added post-loop drain code (`while (Sf < Sn) { wait_step() }`) for both modes.
-
-4. **SR Window Size**: `receiver_sr_mode` hardcoded window_size=16 instead of threading `arq_config_t->window_size`. Fixed: added parameter and use it in `Sw = 2^(window_size-1)`.
-
-5. **Channel Double-Apply**: Loss/corruption were applied twice per frame (in `channel_send` and `channel_recv`), making effective probability `1-(1-p)^2`. Fixed: moved all impairment to `channel_send`; `channel_recv` is now a plain passthrough.
-
-6. **EOT Check Timing**: EOT check fired on any frame received, including out-of-order/corrupted frames that were discarded. Fixed: moved check to fire only on frames actually delivered to the application.
-
-### 5.2 Known Simplifications
-
-- **No adaptive RTO**: Fixed 100ms; production would use Jacobson/Karels variance tracking
-- **No per-frame latency instrumentation**: `timer_record_rtt()` exists in timer.c but is unused; evaluation measures aggregate latency end-to-end
-- **No acknowledgment delays**: ACK sent immediately; real networks might batch or use delayed ACKs
-- **Single global channel/timer state**: Thread-safe via mutex on channel_stats increment; timers shared (per-process, not per-connection)
-
-## 6. Test Suite Coverage
+## 5. Test Suite Coverage
 
 - **arq_test.c** (15 tests): Frame structure, FCS computation, byte order, sequence toggle
 - **channel_test.c** (7 tests): Empirical loss/corruption/delay rates match configured values within tolerance
@@ -220,7 +196,7 @@ Missing (out of scope for Phase 6):
 - `window_test.c`: Forced sequence number wraparound, mode-switch correctness
 - `frame_test.c`: Protocol-level integration tests (instead, full evaluation harness covers this)
 
-## 7. Conclusion
+## 6. Conclusion
 
 The three ARQ implementations provide a spectrum of trade-offs:
 - **Stop-and-Wait**: Simplest, slowest; useful as reference

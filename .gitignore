@@ -47,6 +47,7 @@ lab2/CLAUDE.md
 lab2/context/**/*.md
 lab2/eval/EVAL_INSIGHTS.md
 /FIXES_COMPLETE.md
+lab2/report/*
 
 # LaTeX/TeX residuals
 *.aux
@@ -60,6 +61,14 @@ lab2/eval/EVAL_INSIGHTS.md
 *.fdb_latexmk
 *.synctex.gz
 
+# Lab3 markdown 
+lab3/CLAUDE.md
+lab3/PLAN.md
+
+*.json
+*.png
+
+
 # Context folder (all contents)
 context/
 context/**/*
@@ -67,3 +76,7 @@ context/**/*
 # Temporary files
 *.tmp
 .DS_Store
+.gitignore
+lab2/REPORT.md
+lab2/eval/EVAL_RESULTS.csv
+lab3/tests/channel_test

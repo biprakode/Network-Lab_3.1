@@ -83,163 +83,130 @@ int files_equal(const char* file1, const char* file2, size_t expected_size) {
     return result;
 }
 
+static const char* CSV_PATH = "eval/EVAL_RESULTS.csv";
+static const char* CSV_HEADER =
+    "mode,window_bits,probability,trial,elapsed_sec,throughput_bps,frames_sent,"
+    "frames_retransmitted,acks_received,corrupted_count,channel_frames_lost,"
+    "channel_frames_corrupted,goodput_efficiency,correct,"
+    "rtt_mean_ms,rtt_min_ms,rtt_max_ms,rtt_samples\n";
+
+static const char* INPUT_FILE = "eval/input.bin";
+static const size_t INPUT_SIZE = 384;
+
+static arq_mode_t MODES[] = {ARQ_SW, ARQ_GBN, ARQ_SR};
+static const char* MODE_NAMES[] = {"SW", "GBN", "SR"};
+static int WINDOW_BITS[] = {1, 4, 4};
+
+// Run one transfer and append one CSV row. Returns 0 on success.
+static int run_trial(FILE* csv, int m, double prob, int trial_no) {
+    channel_reset_stats();
+    channel_config cfg = {.loss_prob = prob, .corruption_prob = prob, .delay_ms = 0};
+    channel_init(cfg);
+    timer_reset_stats();
+
+    int fds[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
+        perror("socketpair");
+        return -1;
+    }
+
+    char output_file[256];
+    snprintf(output_file, sizeof(output_file), "eval/output_%d_%.0f_%d.bin", m, prob * 10, trial_no);
+
+    arq_config_t sender_config = {.mode = MODES[m], .window_size = WINDOW_BITS[m], .socket_fd = fds[0], .filename = (char*)INPUT_FILE};
+    arq_config_t receiver_config = {.mode = MODES[m], .window_size = WINDOW_BITS[m], .socket_fd = fds[1], .filename = output_file};
+
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+
+    pthread_t sender_tid, receiver_tid;
+    thread_arg_t* sender_arg = malloc(sizeof(thread_arg_t));
+    thread_arg_t* receiver_arg = malloc(sizeof(thread_arg_t));
+    sender_arg->fd = fds[0];
+    sender_arg->config = sender_config;
+    receiver_arg->fd = fds[1];
+    receiver_arg->config = receiver_config;
+
+    pthread_create(&receiver_tid, NULL, receiver_thread_func, receiver_arg);
+    pthread_create(&sender_tid, NULL, sender_thread_func, sender_arg);
+    pthread_join(receiver_tid, NULL);
+    // The receiver has delivered everything and hung up. Close its socket end so
+    // the sender sees EOF and stops waiting for a final ACK that may be lost.
+    close(fds[1]);
+    pthread_join(sender_tid, NULL);
+
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    close(fds[0]);
+
+    double elapsed = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+    arq_stats_t s = sender_get_stats(&sender_config);
+    channel_stats ch = channel_get_stats();
+    int correct = files_equal(INPUT_FILE, output_file, INPUT_SIZE);
+
+    double throughput_bps = (INPUT_SIZE * 8) / elapsed;
+    uint32_t total_frames = s.frames_sent + s.frames_retransmitted;
+    double goodput = (total_frames > 0) ? ((double)INPUT_SIZE / (total_frames * 65)) : 0.0;
+    double rtt_mean = (s.rtt_samples > 0) ? (s.rtt_sum_ms / s.rtt_samples) : 0.0;
+
+    fprintf(csv, "%s,%d,%.1f,%d,%.6f,%.2f,%u,%u,%u,%u,%lu,%lu,%.4f,%d,%.4f,%.4f,%.4f,%u\n",
+            MODE_NAMES[m], WINDOW_BITS[m], prob, trial_no, elapsed, throughput_bps,
+            s.frames_sent, s.frames_retransmitted, s.acks_received, s.corrupted_count,
+            ch.frames_lost, ch.frames_corrupted, goodput, correct,
+            rtt_mean, s.rtt_min_ms, s.rtt_max_ms, s.rtt_samples);
+    fflush(csv);
+    unlink(output_file);
+
+    printf("  %s p=%.1f t=%d -> %.3fs goodput=%.4f correct=%s\n",
+           MODE_NAMES[m], prob, trial_no, elapsed, goodput, correct ? "yes" : "NO");
+    return 0;
+}
+
+static int ensure_input(void) {
+    FILE* f = fopen(INPUT_FILE, "rb");
+    if (f) { fclose(f); return 0; }
+    printf("[EVAL] Generating input file: %s (%zu bytes)\n", INPUT_FILE, INPUT_SIZE);
+    return generate_input_file(INPUT_FILE, INPUT_SIZE);
+}
+
 int main(int argc, char* argv[]) {
-    int num_trials = 5;
-    if (argc > 1) {
-        num_trials = atoi(argv[1]);
+    // Single combo mode: eval_main one <mode_idx 0..2> <prob> <trial_no>
+    if (argc >= 5 && strcmp(argv[1], "one") == 0) {
+        if (ensure_input() != 0) return 1;
+        int m = atoi(argv[2]);
+        double prob = atof(argv[3]);
+        int trial_no = atoi(argv[4]);
+        int have_file = 0;
+        FILE* probe = fopen(CSV_PATH, "rb");
+        if (probe) { have_file = 1; fclose(probe); }
+        FILE* csv = fopen(CSV_PATH, "a");
+        if (!csv) { perror("fopen csv"); return 1; }
+        if (!have_file) fputs(CSV_HEADER, csv);
+        int rc = run_trial(csv, m, prob, trial_no);
+        fclose(csv);
+        return rc == 0 ? 0 : 1;
     }
 
-    // Configuration
-    const char* input_file = "eval/input.bin";
-    const size_t input_size = 1024;
+    // Full sweep mode: eval_main [num_trials]
+    int num_trials = 2;
+    if (argc > 1) num_trials = atoi(argv[1]);
 
-    arq_mode_t modes[] = {ARQ_SW, ARQ_GBN, ARQ_SR};
-    const char* mode_names[] = {"SW", "GBN", "SR"};
-    int window_bits[] = {1, 4, 4};
-    double probabilities[] = {0.0};
+    if (ensure_input() != 0) { fprintf(stderr, "Failed to generate input file\n"); return 1; }
 
-    int num_modes = sizeof(modes) / sizeof(modes[0]);
-    int num_probs = sizeof(probabilities) / sizeof(probabilities[0]);
+    FILE* csv = fopen(CSV_PATH, "w");
+    if (!csv) { perror("fopen csv"); return 1; }
+    fputs(CSV_HEADER, csv);
 
-    // Generate input file
-    printf("[EVAL] Generating input file: %s (%zu bytes)\n", input_file, input_size);
-    if (generate_input_file(input_file, input_size) != 0) {
-        fprintf(stderr, "Failed to generate input file\n");
-        return 1;
-    }
+    double probabilities[] = {0.0, 0.1, 0.2, 0.3, 0.4, 0.5};
+    int num_modes = (int)(sizeof(MODES) / sizeof(MODES[0]));
+    int num_probs = (int)(sizeof(probabilities) / sizeof(probabilities[0]));
 
-    // Open CSV file
-    FILE* csv = fopen("eval/EVAL_RESULTS.csv", "w");
-    if (!csv) {
-        perror("fopen EVAL_RESULTS.csv");
-        return 1;
-    }
-
-    // Write CSV header
-    fprintf(csv, "mode,window_bits,probability,trial,elapsed_sec,throughput_bps,frames_sent,");
-    fprintf(csv, "frames_retransmitted,acks_received,corrupted_count,channel_frames_lost,");
-    fprintf(csv, "channel_frames_corrupted,goodput_efficiency,correct\n");
-
-    // Main sweep loop
-    int total_trials = num_modes * num_probs * num_trials;
-    int trial_count = 0;
-
-    for (int m = 0; m < num_modes; m++) {
-        for (int p = 0; p < num_probs; p++) {
-            for (int t = 0; t < num_trials; t++) {
-                trial_count++;
-                printf("[TRIAL %d/%d] Mode=%s, P=%.1f, Trial=%d\n",
-                       trial_count, total_trials, mode_names[m], probabilities[p], t + 1);
-
-                // Reset and configure channel
-                channel_reset_stats();
-                channel_config cfg = {
-                    .loss_prob = probabilities[p],
-                    .corruption_prob = probabilities[p],
-                    .delay_ms = 0
-                };
-                channel_init(cfg);
-                timer_reset_stats();
-
-                // Create socket pair
-                int fds[2];
-                if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
-                    perror("socketpair");
-                    fclose(csv);
-                    return 1;
-                }
-
-                // Build config structures
-                char output_file[256];
-                snprintf(output_file, sizeof(output_file), "eval/output_%d_%d_%d.bin", m, p, t);
-
-                arq_config_t sender_config = {
-                    .mode = modes[m],
-                    .window_size = window_bits[m],
-                    .socket_fd = fds[0],
-                    .filename = (char*)input_file
-                };
-
-                arq_config_t receiver_config = {
-                    .mode = modes[m],
-                    .window_size = window_bits[m],
-                    .socket_fd = fds[1],
-                    .filename = output_file
-                };
-
-                // Measure time
-                struct timespec start, end;
-                clock_gettime(CLOCK_MONOTONIC, &start);
-
-                // Spawn threads
-                pthread_t sender_tid, receiver_tid;
-
-                thread_arg_t* sender_arg = malloc(sizeof(thread_arg_t));
-                thread_arg_t* receiver_arg = malloc(sizeof(thread_arg_t));
-                sender_arg->fd = fds[0];
-                sender_arg->config = sender_config;
-                receiver_arg->fd = fds[1];
-                receiver_arg->config = receiver_config;
-
-                pthread_create(&receiver_tid, NULL, receiver_thread_func, receiver_arg);
-                pthread_create(&sender_tid, NULL, sender_thread_func, sender_arg);
-
-                // Wait for completion
-                pthread_join(receiver_tid, NULL);
-                pthread_join(sender_tid, NULL);
-
-                clock_gettime(CLOCK_MONOTONIC, &end);
-
-                // Close sockets
-                close(fds[0]);
-                close(fds[1]);
-
-                // Compute elapsed time
-                double elapsed = (end.tv_sec - start.tv_sec) +
-                                (end.tv_nsec - start.tv_nsec) / 1e9;
-
-                // Get stats
-                arq_stats_t sender_stats = sender_get_stats(&sender_config);
-                channel_stats ch_stats = channel_get_stats();
-
-                // Check correctness
-                int correct = files_equal(input_file, output_file, input_size);
-
-                // Compute metrics
-                double throughput_bps = (input_size * 8) / elapsed;
-                uint32_t total_frames = sender_stats.frames_sent + sender_stats.frames_retransmitted;
-                double goodput_efficiency = (total_frames > 0) ?
-                    ((double)input_size / (total_frames * 65)) : 0.0;
-
-                // Write CSV row
-                fprintf(csv, "%s,%d,%.1f,%d,%.6f,%.2f,%u,%u,%u,%u,%lu,%lu,%.4f,%d\n",
-                        mode_names[m],
-                        window_bits[m],
-                        probabilities[p],
-                        t + 1,
-                        elapsed,
-                        throughput_bps,
-                        sender_stats.frames_sent,
-                        sender_stats.frames_retransmitted,
-                        sender_stats.acks_received,
-                        sender_stats.corrupted_count,
-                        ch_stats.frames_lost,
-                        ch_stats.frames_corrupted,
-                        goodput_efficiency,
-                        correct);
-                fflush(csv);
-
-                // Clean up output file
-                unlink(output_file);
-
-                printf("  → elapsed=%.3fs, goodput=%.4f, correct=%s\n",
-                       elapsed, goodput_efficiency, correct ? "yes" : "NO");
-            }
-        }
-    }
+    for (int m = 0; m < num_modes; m++)
+        for (int p = 0; p < num_probs; p++)
+            for (int t = 1; t <= num_trials; t++)
+                run_trial(csv, m, probabilities[p], t);
 
     fclose(csv);
-    printf("\n[EVAL] Complete. Results written to eval/EVAL_RESULTS.csv\n");
+    printf("\n[EVAL] Complete. Results written to %s\n", CSV_PATH);
 
     return 0;
 }

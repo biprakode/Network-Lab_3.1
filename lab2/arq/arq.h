@@ -29,6 +29,11 @@ typedef struct {
     uint32_t acks_received;
     uint32_t corrupted_count;
     double total_time;
+    // Round-trip time between a data frame leaving the sender and its ACK arriving
+    uint32_t rtt_samples;
+    double rtt_sum_ms;
+    double rtt_min_ms;
+    double rtt_max_ms;
 } arq_stats_t;
 
 #endif
